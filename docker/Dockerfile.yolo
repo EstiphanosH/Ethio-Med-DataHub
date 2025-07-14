@@ -10,6 +10,6 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY src/scraper /app/src/scraper
+COPY src/yolo /app/src/yolo
 
-CMD ["python", "-m", "src.scraper.telegram_scraper"]
+CMD ["python", "-m", "src.yolo.yolo_object_detection"]
