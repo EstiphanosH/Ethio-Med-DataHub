@@ -1,1 +1,3 @@
-# Database Dockerfile
+FROM postgres:13
+
+COPY initdb/ /docker-entrypoint-initdb.d/
