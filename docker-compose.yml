@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  # Main PostgreSQL database for the application
+  postgres:
+    image: postgres:14
+    container_name: medical_db
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d  # Database initialization scripts
+      - ./data:/data  # Mount data directory
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  # Telegram data scraper service
+  scraper:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.scraper
+    container_name: medical_scraper
+    env_file: .env
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_SESSION_NAME: ${TELEGRAM_SESSION_NAME}
+      TELEGRAM_PHONE: ${TELEGRAM_PHONE}
+      SCRAPE_CHANNELS: ${SCRAPE_CHANNELS}
+      IMAGE_CHANNELS: ${IMAGE_CHANNELS}
+      INITIAL_SCRAPE_DAYS_BACK: ${INITIAL_SCRAPE_DAYS_BACK}
+    volumes:
+      - ./data:/data  # Persistent data storage
+      - ./logs:/app/logs  # Log files
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # FastAPI application service
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: medical_api
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      API_HOST: ${API_HOST}
+      API_PORT: ${API_PORT}
+      API_SECRET_KEY: ${API_SECRET_KEY}
+    volumes:
+      - ./data:/data
+    ports:
+      - "${API_PORT}:${API_PORT}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${API_PORT}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # YOLO image processing service
+  yolo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.yolo
+    container_name: medical_yolo
+    env_file: .env
+    environment:
+      YOLO_MODEL_PATH: ${YOLO_MODEL_PATH}
+      YOLO_CONFIDENCE_THRESH: ${YOLO_CONFIDENCE_THRESH}
+      DETECTION_CLASSES: ${DETECTION_CLASSES}
+    volumes:
+      - ./data:/data
+      - ./models:/app/models
+    depends_on:
+      scraper:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  # dbt transformation service
+  dbt:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dbt
+    container_name: medical_dbt
+    env_file: .env
+    environment:
+      DBT_TARGET_SCHEMA: ${DBT_TARGET_SCHEMA}
+      DBT_THREADS: ${DBT_THREADS}
+    volumes:
+      - ./src/dbt_project:/app
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      yolo:
+        condition: service_completed_successfully
+
+  # Dagster orchestration service
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.orch
+    container_name: medical_orch
+    env_file: .env
+    environment:
+      DAGSTER_HOST: ${DAGSTER_HOST}
+      DAGSTER_PORT: ${DAGSTER_PORT}
+      DAGSTER_POSTGRES_DB: ${DAGSTER_POSTGRES_DB}
+      DAGSTER_POSTGRES_USER: ${DAGSTER_POSTGRES_USER}
+      DAGSTER_POSTGRES_PASSWORD: ${DAGSTER_POSTGRES_PASSWORD}
+    volumes:
+      - ./src:/app/src
+      - ./data:/data
+      - ./logs:/app/logs
+    ports:
+      - "${DAGSTER_PORT}:${DAGSTER_PORT}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "dagster-daemon run &
+      dagster-webserver -h $${DAGSTER_HOST} -p $${DAGSTER_PORT}"
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+    name: medical_network
